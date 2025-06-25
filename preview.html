@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Pixel Block Editor - Solid Shift-Select & Always Visible Controls</title>
+<style>
+  html, body {
+    margin:0; padding:0; height:100%;
+    background:#111; color:#eee;
+    font-family: monospace;
+    user-select:none;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  #container {
+    flex:1;
+    background:#222;
+    position: relative;
+    cursor: grab;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    background:#111;
+    image-rendering: pixelated;
+  }
+  #selectionBox {
+    position: absolute;
+    border: 2px dashed yellow;
+    pointer-events: none;
+    display: none;
+    z-index: 10;
+  }
+  #controls {
+    background: rgba(30,30,30,0.95);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-top: 1px solid #444;
+    flex-wrap: wrap;
+  }
+  #controls p {
+    margin: 0;
+    width: 140px;
+  }
+  input[type="number"], input[type="color"], button {
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border:none;
+    outline:none;
+    color:#222;
+  }
+  input[type="number"] {
+    width: 50px;
+  }
+  button {
+    background:#0a84ff;
+    color:#fff;
+    font-weight:bold;
+    cursor:pointer;
+    transition: background-color 0.2s;
+  }
+  button:hover {
+    background:#005fcc;
+  }
+  #fileWrapper {
+    position: fixed;
+    top: 10px; right: 10px;
+    z-index: 9999;
+  }
+  label {
+    user-select:none;
+  }
+</style>
+</head>
+<body>
+
+<div id="container">
+  <canvas id="canvas"></canvas>
+  <div id="selectionBox"></div>
+</div>
+
+<div id="controls">
+  <p>Pixel (<span id="px">-</span>, <span id="py">-</span>)</p>
+  <label>R: <input type="number" id="r" min="0" max="255" value="0"></label>
+  <label>G: <input type="number" id="g" min="0" max="255" value="0"></label>
+  <label>B: <input type="number" id="b" min="0" max="255" value="0"></label>
+  <input type="color" id="colorPicker" style="width:40px; height:32px; border:none; padding:0;">
+  <button id="applyBtn">Apply</button>
+  <button id="downloadBtn">Download PNG</button>
+  <label style="white-space:nowrap;">
+    <input type="checkbox" id="selectSimilarToggle" /> Select Similar Colors
+  </label>
+  <small style="color:#888; margin-left:10px;">(Hold Shift and drag to select pixels)</small>
+</div>
+
+<div id="fileWrapper">
+  <input type="file" id="imgLoader" accept="image/*" />
+</div>
+
+<script>
+  const container = document.getElementById('container');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const selectionBox = document.getElementById('selectionBox');
+  const controls = document.getElementById('controls');
+  const pxOut = document.getElementById('px');
+  const pyOut = document.getElementById('py');
+  const rIn = document.getElementById('r');
+  const gIn = document.getElementById('g');
+  const bIn = document.getElementById('b');
+  const colorPicker = document.getElementById('colorPicker');
+  const applyBtn = document.getElementById('applyBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const imgLoader = document.getElementById('imgLoader');
+  const selectSimilarToggle = document.getElementById('selectSimilarToggle');
+
+  let imgWidth = 0;
+  let imgHeight = 0;
+  let pixelData = null;
+
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+
+  // Drag & Selection state:
+  let isPanning = false;
+  let isSelecting = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let panStartX = 0;
+  let panStartY = 0;
+  let selectionStart = null;
+  let selectionEnd = null;
+
+  let selectedPixels = [];
+  let selectedPixel = null;
+
+  // To prevent single click after shift drag selects a pixel (that sneaky bug)
+  let justFinishedSelecting = false;
+
+  imgLoader.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const img = new Image();
+      img.onload = () => {
+        imgWidth = img.width;
+        imgHeight = img.height;
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = imgWidth;
+        tempCanvas.height = imgHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(img, 0, 0);
+
+        pixelData = tempCtx.getImageData(0, 0, imgWidth, imgHeight);
+
+        zoom = 20;
+        panX = (canvas.width - imgWidth * zoom) / 2;
+        panY = (canvas.height - imgHeight * zoom) / 2;
+
+        clearSelection();
+        draw();
+      };
+      img.src = evt.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!pixelData) return;
+
+    const cols = Math.ceil(canvas.width / zoom);
+    const rows = Math.ceil(canvas.height / zoom);
+
+    const startX = Math.floor(-panX / zoom);
+    const startY = Math.floor(-panY / zoom);
+
+    let stride = zoom < 2 ? 4 : zoom < 4 ? 2 : 1;
+    for (let y = startY; y < startY + rows; y += stride) {
+      if (y < 0 || y >= imgHeight) continue;
+      for (let x = startX; x < startX + cols; x += stride) {
+        if (x < 0 || x >= imgWidth) continue;
+        const i = (y * imgWidth + x) * 4;
+        const r = pixelData.data[i];
+        const g = pixelData.data[i + 1];
+        const b = pixelData.data[i + 2];
+        const a = pixelData.data[i + 3];
+        if (a === 0) continue;
+    
+        ctx.fillStyle = `rgba(${r},${g},${b},${a / 255})`;
+        const px = panX + x * zoom;
+        const py = panY + y * zoom;
+        const size = zoom * stride;
+    
+        ctx.fillRect(px, py, size, size);
+      }
+    }
+
+
+    if (selectedPixels.length > 0) {
+      ctx.strokeStyle = 'yellow';
+      ctx.lineWidth = 2;
+      for (const p of selectedPixels) {
+        const px = panX + p.x * zoom;
+        const py = panY + p.y * zoom;
+        ctx.strokeRect(px + 1, py + 1, zoom - 2, zoom - 2);
+      }
+    } else if (selectedPixel) {
+      ctx.strokeStyle = 'yellow';
+      ctx.lineWidth = 2;
+      const px = panX + selectedPixel.x * zoom;
+      const py = panY + selectedPixel.y * zoom;
+      ctx.strokeRect(px + 1, py + 1, zoom - 2, zoom - 2);
+    }
+  }
+
+  function getPixelFromMouse(mx, my) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = mx - rect.left;
+    const cy = my - rect.top;
+    const px = Math.floor((cx - panX) / zoom);
+    const py = Math.floor((cy - panY) / zoom);
+    if (px < 0 || py < 0 || px >= imgWidth || py >= imgHeight) return null;
+    return {x: px, y: py};
+  }
+
+  function clearSelection() {
+    selectedPixels = [];
+    selectedPixel = null;
+    updateControls(null);
+    hideSelectionBox();
+  }
+
+  function updateControls(posOrPixels) {
+    if (!pixelData) return;
+
+    if (!posOrPixels) {
+      pxOut.textContent = '-';
+      pyOut.textContent = '-';
+      rIn.value = 0;
+      gIn.value = 0;
+      bIn.value = 0;
+      colorPicker.value = '#000000';
+      return;
+    }
+
+    if (Array.isArray(posOrPixels)) {
+      const pixels = posOrPixels;
+      let rSum=0, gSum=0, bSum=0;
+      for (const p of pixels) {
+        const i = (p.y * imgWidth + p.x) * 4;
+        rSum += pixelData.data[i];
+        gSum += pixelData.data[i+1];
+        bSum += pixelData.data[i+2];
+      }
+      const n = pixels.length;
+      const r = Math.round(rSum / n);
+      const g = Math.round(gSum / n);
+      const b = Math.round(bSum / n);
+      pxOut.textContent = `${n} pixels`;
+      pyOut.textContent = '-';
+      rIn.value = r;
+      gIn.value = g;
+      bIn.value = b;
+      colorPicker.value = rgbToHex(r,g,b);
+    } else {
+      const pos = posOrPixels;
+      pxOut.textContent = pos.x;
+      pyOut.textContent = pos.y;
+      const i = (pos.y * imgWidth + pos.x) * 4;
+      const r = pixelData.data[i];
+      const g = pixelData.data[i+1];
+      const b = pixelData.data[i+2];
+      rIn.value = r;
+      gIn.value = g;
+      bIn.value = b;
+      colorPicker.value = rgbToHex(r,g,b);
+    }
+  }
+
+  function hideSelectionBox() {
+    selectionBox.style.display = 'none';
+  }
+
+  function showSelectionBox() {
+    selectionBox.style.display = 'block';
+  }
+
+  applyBtn.addEventListener('click', () => {
+    if (!pixelData) return;
+    if (selectedPixels.length === 0 && !selectedPixel) return;
+
+    const r = clamp(parseInt(rIn.value), 0, 255);
+    const g = clamp(parseInt(gIn.value), 0, 255);
+    const b = clamp(parseInt(bIn.value), 0, 255);
+
+    const targets = selectedPixels.length > 0 ? selectedPixels : [selectedPixel];
+
+    for (const p of targets) {
+      const i = (p.y * imgWidth + p.x) * 4;
+      pixelData.data[i] = r;
+      pixelData.data[i+1] = g;
+      pixelData.data[i+2] = b;
+      pixelData.data[i+3] = 255;
+    }
+
+    draw();
+    updateControls(targets);
+  });
+
+  colorPicker.addEventListener('input', () => {
+    const c = hexToRgb(colorPicker.value);
+    if (!c) return;
+    rIn.value = c.r;
+    gIn.value = c.g;
+    bIn.value = c.b;
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!pixelData) return;
+
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = imgWidth;
+    exportCanvas.height = imgHeight;
+    const exportCtx = exportCanvas.getContext('2d');
+    exportCtx.putImageData(pixelData, 0, 0);
+
+    exportCanvas.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'edited_image.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+  });
+
+  selectSimilarToggle.addEventListener('change', () => {
+    clearSelection();
+    draw();
+  });
+
+  // Panning & Selection handlers
+
+  container.addEventListener('mousedown', e => {
+    if (!pixelData) return;
+
+    if (selectSimilarToggle.checked) {
+      // selecting similar disables dragging and selection box
+      const pos = getPixelFromMouse(e.clientX, e.clientY);
+      if (!pos) return;
+      selectedPixels = findSimilarPixels(pos, 50);
+      selectedPixel = null;
+      updateControls(selectedPixels);
+      draw();
+      return;
+    }
+
+    if (e.shiftKey) {
+      isSelecting = true;
+      selectionStart = { x: e.clientX, y: e.clientY };
+      selectionEnd = null;
+      showSelectionBox();
+      container.style.cursor = 'crosshair';
+      justFinishedSelecting = false;
+    } else {
+      isPanning = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      panStartX = panX;
+      panStartY = panY;
+      container.style.cursor = 'grabbing';
+      justFinishedSelecting = false;
+    }
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (isSelecting) {
+      selectionEnd = { x: e.clientX, y: e.clientY };
+      updateSelectionBox();
+    } else if (isPanning) {
+      panX = panStartX + (e.clientX - dragStartX);
+      panY = panStartY + (e.clientY - dragStartY);
+      draw();
+    }
+  });
+
+  window.addEventListener('mouseup', e => {
+    if (isSelecting) {
+      finalizeSelection();
+      isSelecting = false;
+      hideSelectionBox();
+      container.style.cursor = 'grab';
+      justFinishedSelecting = true;
+    } else if (isPanning) {
+      isPanning = false;
+      container.style.cursor = 'grab';
+      justFinishedSelecting = false;
+    }
+  });
+
+  canvas.addEventListener('click', e => {
+    if (!pixelData) return;
+    if (selectSimilarToggle.checked) return;
+    if (isSelecting || isPanning) return;
+
+    // Ignore click right after shift select to prevent accidental single pixel select
+    if (justFinishedSelecting) {
+      justFinishedSelecting = false;
+      return;
+    }
+
+    const pos = getPixelFromMouse(e.clientX, e.clientY);
+    if (!pos) return;
+
+    selectedPixel = pos;
+    selectedPixels = [];
+    updateControls(pos);
+    draw();
+  });
+
+  function updateSelectionBox() {
+    if (!selectionStart || !selectionEnd) return;
+
+    const x = Math.min(selectionStart.x, selectionEnd.x);
+    const y = Math.min(selectionStart.y, selectionEnd.y);
+    const w = Math.abs(selectionEnd.x - selectionStart.x);
+    const h = Math.abs(selectionEnd.y - selectionStart.y);
+
+    selectionBox.style.left = x + 'px';
+    selectionBox.style.top = y + 'px';
+    selectionBox.style.width = w + 'px';
+    selectionBox.style.height = h + 'px';
+  }
+
+  function screenToPixelCoords(sx, sy) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = sx - rect.left;
+    const cy = sy - rect.top;
+    const px = Math.floor((cx - panX) / zoom);
+    const py = Math.floor((cy - panY) / zoom);
+    return {
+      x: clamp(px, 0, imgWidth -1),
+      y: clamp(py, 0, imgHeight -1)
+    };
+  }
+
+  function finalizeSelection() {
+    if (!selectionStart || !selectionEnd) return;
+
+    const p1 = screenToPixelCoords(selectionStart.x, selectionStart.y);
+    const p2 = screenToPixelCoords(selectionEnd.x, selectionEnd.y);
+
+    const xStart = Math.min(p1.x, p2.x);
+    const xEnd = Math.max(p1.x, p2.x);
+    const yStart = Math.min(p1.y, p2.y);
+    const yEnd = Math.max(p1.y, p2.y);
+
+    selectedPixels = [];
+    for(let y = yStart; y <= yEnd; y++) {
+      for(let x = xStart; x <= xEnd; x++) {
+        selectedPixels.push({x, y});
+      }
+    }
+
+    selectedPixel = null;
+    updateControls(selectedPixels);
+    draw();
+  }
+
+  function findSimilarPixels(pos, tolerance) {
+    if (!pixelData) return [];
+    const i = (pos.y * imgWidth + pos.x) * 4;
+    const baseR = pixelData.data[i];
+    const baseG = pixelData.data[i + 1];
+    const baseB = pixelData.data[i + 2];
+
+    const similar = [];
+    for(let y = 0; y < imgHeight; y++) {
+      for(let x = 0; x < imgWidth; x++) {
+        const idx = (y * imgWidth + x) * 4;
+        const r = pixelData.data[idx];
+        const g = pixelData.data[idx + 1];
+        const b = pixelData.data[idx + 2];
+
+        if (colorDistance(baseR, baseG, baseB, r, g, b) <= tolerance) {
+          similar.push({x,y});
+        }
+      }
+    }
+    return similar;
+  }
+
+  function colorDistance(r1, g1, b1, r2, g2, b2) {
+    return Math.sqrt(
+      (r1 - r2) * (r1 - r2) +
+      (g1 - g2) * (g1 - g2) +
+      (b1 - b2) * (b1 - b2)
+    );
+  }
+
+  // Zoom handling (mouse wheel)
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (!pixelData) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    const wheel = e.deltaY < 0 ? 1.1 : 0.9;
+    const newZoom = clamp(zoom * wheel, 1, 80);
+
+    // Zoom towards mouse pointer
+    panX -= (mx - panX) * (newZoom / zoom - 1);
+    panY -= (my - panY) * (newZoom / zoom - 1);
+
+    zoom = newZoom;
+    draw();
+  }, { passive: false });
+
+  // Window resize handling
+  window.addEventListener('resize', () => {
+    if (!pixelData) return;
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    draw();
+  });
+
+  // Utilities
+  function clamp(num, min, max) {
+    return num < min ? min : num > max ? max : num;
+  }
+  function rgbToHex(r,g,b) {
+    return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
+  }
+  function hexToRgb(hex) {
+    const m = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+    return m ? {
+      r: parseInt(m[1],16),
+      g: parseInt(m[2],16),
+      b: parseInt(m[3],16)
+    } : null;
+  }
+
+  // Init canvas size
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+</script>
+
+</body>
+</html>
