@@ -96,6 +96,7 @@
     <input type="checkbox" id="selectSimilarToggle" /> Select Similar Colors
   </label>
   <small style="color:#888; margin-left:10px;">(Hold Shift and drag to select pixels)</small>
+  <small style="color:#888; margin-left:10px;">(Levt and right to switch video frames)</small>
 </div>
 
 <div id="fileWrapper" style="backround: black;">
@@ -167,7 +168,7 @@ const editedFrames = new Map();   // key: time (ms), value: ImageData
           canvas.height = container.clientHeight;
           captureVideoFrame();
           estimateFPS();
-          userfps = prompt("what fps is your video")
+          userfps = prompt("what fps is your video (even number please)")
         };
       } else {
         isVideo = false;
