@@ -96,6 +96,8 @@
   <label style="white-space:nowrap;">
     <input type="checkbox" id="selectSimilarToggle" /> Select Similar Colors
   </label>
+    <label><input type="checkbox" id="drawCheckbox"> Draw Mode</label>
+
   <small style="color:#888; margin-left:10px;">(Hold Shift and drag to select pixels)</small>
   <small style="color:#888; margin-left:10px;">(Left and Right to switch video frames)</small>
 
@@ -159,6 +161,14 @@ const editedFrames = new Map();   // key: time (ms), value: ImageData
   let tolerance = 30
   const toleranceSlider = document.getElementById('toleranceSlider');
   const toleranceValue = document.getElementById('toleranceValue');
+  const drawCheckbox = document.getElementById('drawCheckbox');
+    let drawMode = false;
+    let isDrawing = false;
+    
+    drawCheckbox.addEventListener('change', () => {
+      drawMode = drawCheckbox.checked;
+    });
+
 
   toleranceSlider.addEventListener('input', () => {
     toleranceValue.textContent = toleranceSlider.value;
@@ -473,6 +483,11 @@ function estimateFPS() {
   container.addEventListener('mousedown', e => {
     if (!pixelData) return;
 
+      if (drawMode) {
+          isDrawing = true;
+          drawAt(e.clientX, e.clientY);
+          return;
+        }
     if (selectSimilarToggle.checked) {
       // selecting similar disables dragging and selection box
       const pos = getPixelFromMouse(e.clientX, e.clientY);
@@ -503,6 +518,11 @@ function estimateFPS() {
   });
 
   window.addEventListener('mousemove', e => {
+    if (drawMode && isDrawing) {
+      drawAt(e.clientX, e.clientY);
+      return;
+    }
+
     if (isSelecting) {
       selectionEnd = { x: e.clientX, y: e.clientY };
       updateSelectionBox();
@@ -514,6 +534,11 @@ function estimateFPS() {
   });
 
   window.addEventListener('mouseup', e => {
+    if (drawMode && isDrawing) {
+      isDrawing = false;
+      return;
+    }
+
     if (isSelecting) {
       finalizeSelection();
       isSelecting = false;
@@ -764,6 +789,32 @@ function seekTo(seconds) {
   });
 }
 
+function drawAt(clientX, clientY) {
+  if (!pixelData) return;
+
+  const pos = getPixelFromMouse(clientX, clientY);
+  if (!pos) return;
+
+  const i = (pos.y * imgWidth + pos.x) * 4;
+  const r = clamp(parseInt(rIn.value), 0, 255);
+  const g = clamp(parseInt(gIn.value), 0, 255);
+  const b = clamp(parseInt(bIn.value), 0, 255);
+
+  pixelData.data[i] = r;
+  pixelData.data[i + 1] = g;
+  pixelData.data[i + 2] = b;
+  pixelData.data[i + 3] = 255;
+
+  if (isVideo) {
+    const key = Math.floor(video.currentTime * 1000);
+    editedFrames.set(key, new ImageData(new Uint8ClampedArray(pixelData.data), pixelData.width, pixelData.height));
+  }
+
+  draw();
+}
+
+
+    
 // Delay helper
 function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
