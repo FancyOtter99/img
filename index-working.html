@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Pixel Block Editor - Solid Shift-Select & Always Visible Controls</title>
+<title>fancyotter image and video editor</title>
 <style>
   html, body {
     margin:0; padding:0; height:100%;
@@ -91,15 +91,19 @@
   <input type="color" id="colorPicker" style="width:40px; height:32px; border:none; padding:0;">
   <button id="applyBtn">Apply</button>
   <button id="downloadBtn">Download PNG</button>
+  <button id="downloadAllBtn">Download All Frames</button>
   <label style="white-space:nowrap;">
     <input type="checkbox" id="selectSimilarToggle" /> Select Similar Colors
   </label>
   <small style="color:#888; margin-left:10px;">(Hold Shift and drag to select pixels)</small>
+  <small style="color:#888; margin-left:10px;">(Left and Right to switch video frames)</small>
 </div>
 
 <div id="fileWrapper" style="backround: black;">
-  <input type="file" id="imgLoader" accept="image/*" />
+  <input type="file" id="imgLoader" accept="image/*,video/*" />
 </div>
+<video id="hiddenVideo" style="display:none;" crossorigin="anonymous"></video>
+
 
 <script>
   const container = document.getElementById('container');
@@ -118,6 +122,15 @@
   const imgLoader = document.getElementById('imgLoader');
   const selectSimilarToggle = document.getElementById('selectSimilarToggle');
 
+const frameEdits = new Map(); // key: frame number, value: ImageData
+
+    const originalFrames = new Map(); // key: time (ms), value: ImageData
+const editedFrames = new Map();   // key: time (ms), value: ImageData
+
+  const video = document.getElementById('hiddenVideo');
+  let isVideo = false;
+
+    
   let imgWidth = 0;
   let imgHeight = 0;
   let pixelData = null;
@@ -143,37 +156,89 @@
   let justFinishedSelecting = false;
 
   imgLoader.addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = evt => {
-      const img = new Image();
-      img.onload = () => {
-        imgWidth = img.width;
-        imgHeight = img.height;
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
+      const file = e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      if (file.type.startsWith("video")) {
+        isVideo = true;
+        video.src = url;
+        video.currentTime = 0;
+        video.onloadeddata = () => {
+          canvas.width = container.clientWidth;
+          canvas.height = container.clientHeight;
+          captureVideoFrame();
+          estimateFPS();
+          userfps = prompt("what fps is your video (even number please)")
+        };
+      } else {
+        isVideo = false;
+        const reader = new FileReader();
+        reader.onload = evt => {
+          const img = new Image();
+          img.onload = () => {
+            imgWidth = img.width;
+            imgHeight = img.height;
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+    
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = imgWidth;
+            tempCanvas.height = imgHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(img, 0, 0);
+    
+            pixelData = tempCtx.getImageData(0, 0, imgWidth, imgHeight);
+    
+            zoom = zoom;
+            panX = (canvas.width - imgWidth * zoom) / 2;
+            panY = (canvas.height - imgHeight * zoom) / 2;
+    
+            clearSelection();
+            draw();
+          };
+          img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+      }
+    });
 
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = imgWidth;
-        tempCanvas.height = imgHeight;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.drawImage(img, 0, 0);
 
-        pixelData = tempCtx.getImageData(0, 0, imgWidth, imgHeight);
+    function captureVideoFrame() {
+      if (!isVideo || !video.videoWidth || !video.videoHeight) return;
+    
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = video.videoWidth;
+      tempCanvas.height = video.videoHeight;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(video, 0, 0);
+    
+      const frameData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+    
+      imgWidth = tempCanvas.width;
+      imgHeight = tempCanvas.height;
+      pixelData = frameData;
+    
+      zoom = zoom;
+      panX = (canvas.width - imgWidth * zoom) / 2;
+      panY = (canvas.height - imgHeight * zoom) / 2;
+    
+      const key = Math.floor(video.currentTime * 1000);
+      if (!originalFrames.has(key)) {
+        originalFrames.set(key, new ImageData(
+          new Uint8ClampedArray(frameData.data),
+          frameData.width,
+          frameData.height
+        ));
+      }
+    
+      clearSelection();
+      draw();
+    }
 
-        zoom = 20;
-        panX = (canvas.width - imgWidth * zoom) / 2;
-        panY = (canvas.height - imgHeight * zoom) / 2;
 
-        clearSelection();
-        draw();
-      };
-      img.src = evt.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
 
+    
+    
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!pixelData) return;
@@ -233,6 +298,36 @@
     return {x: px, y: py};
   }
 
+
+let frameTimes = [];
+let estimatedFPS = 0;
+let frameCountForEstimate = 30; // collect 30 frames for better estimate
+
+function estimateFPS() {
+  let lastTime = performance.now();
+
+  function callback(now, metadata) {
+    if (frameTimes.length >= frameCountForEstimate) {
+      // Calculate average frame interval
+      let intervals = [];
+      for (let i = 1; i < frameTimes.length; i++) {
+        intervals.push(frameTimes[i] - frameTimes[i - 1]);
+      }
+      const avgInterval = intervals.reduce((a,b) => a+b, 0) / intervals.length;
+      estimatedFPS = 1000 / avgInterval;
+      console.log("Estimated FPS:", estimatedFPS.toFixed(2));
+      return;
+    }
+
+    frameTimes.push(now);
+    video.requestVideoFrameCallback(callback);
+  }
+
+  video.requestVideoFrameCallback(callback);
+}
+
+
+    
   function clearSelection() {
     selectedPixels = [];
     selectedPixel = null;
@@ -295,27 +390,34 @@
     selectionBox.style.display = 'block';
   }
 
-  applyBtn.addEventListener('click', () => {
-    if (!pixelData) return;
-    if (selectedPixels.length === 0 && !selectedPixel) return;
+    applyBtn.addEventListener('click', () => {
+      if (!pixelData) return;
+      if (selectedPixels.length === 0 && !selectedPixel) return;
+    
+      const r = clamp(parseInt(rIn.value), 0, 255);
+      const g = clamp(parseInt(gIn.value), 0, 255);
+      const b = clamp(parseInt(bIn.value), 0, 255);
+    
+      const targets = selectedPixels.length > 0 ? selectedPixels : [selectedPixel];
+    
+      for (const p of targets) {
+        const i = (p.y * imgWidth + p.x) * 4;
+        pixelData.data[i] = r;
+        pixelData.data[i + 1] = g;
+        pixelData.data[i + 2] = b;
+        pixelData.data[i + 3] = 255;
+      }
+    
+      if (isVideo) {
+          const key = Math.floor(video.currentTime * 1000);
+          editedFrames.set(key, new ImageData(new Uint8ClampedArray(pixelData.data), pixelData.width, pixelData.height));
+        }
 
-    const r = clamp(parseInt(rIn.value), 0, 255);
-    const g = clamp(parseInt(gIn.value), 0, 255);
-    const b = clamp(parseInt(bIn.value), 0, 255);
+    
+      draw();
+      updateControls(targets);
+    });
 
-    const targets = selectedPixels.length > 0 ? selectedPixels : [selectedPixel];
-
-    for (const p of targets) {
-      const i = (p.y * imgWidth + p.x) * 4;
-      pixelData.data[i] = r;
-      pixelData.data[i+1] = g;
-      pixelData.data[i+2] = b;
-      pixelData.data[i+3] = 255;
-    }
-
-    draw();
-    updateControls(targets);
-  });
 
   colorPicker.addEventListener('input', () => {
     const c = hexToRgb(colorPicker.value);
@@ -338,7 +440,8 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'edited_image.png';
+      a.download = isVideo ? `frame_${Math.floor(video.currentTime * 1000)}ms.png` : 'edited_image.png';
+
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -423,6 +526,7 @@
 
     const pos = getPixelFromMouse(e.clientX, e.clientY);
     if (!pos) return;
+
 
     selectedPixel = pos;
     selectedPixels = [];
@@ -510,6 +614,163 @@
     );
   }
 
+    
+window.addEventListener('keydown', async e => {
+  if (!isVideo) return;
+
+  // Set fixed FPS for stepping
+  const fixedFPS = userfps || 30;
+  estimatedFPS = userfps || 30;
+  const frameDuration = 1 / fixedFPS;
+  const totalFrames = Math.floor(video.duration * fixedFPS);
+
+  // Calculate current frame index snapping to nearest frame
+  let currentFrameIndex = Math.round(video.currentTime / frameDuration);
+
+  if (e.key === 'ArrowRight') {
+    currentFrameIndex = Math.min(currentFrameIndex + 1, totalFrames - 1);
+  } else if (e.key === 'ArrowLeft') {
+    currentFrameIndex = Math.max(currentFrameIndex - 1, 0);
+  } else {
+    return;
+  }
+
+  // Snap time exactly to the frame boundary
+  const newTime = currentFrameIndex * frameDuration;
+
+  video.currentTime = newTime;
+
+  // Wait until frame is ready
+  await new Promise(resolve => {
+    video.onseeked = () => resolve();
+  });
+
+  // Use Math.round for consistent keys
+  const key = Math.round(newTime * 1000);
+
+  if (editedFrames.has(key)) {
+    pixelData = editedFrames.get(key);
+  } else {
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(video, 0, 0);
+    pixelData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+  }
+
+  imgWidth = pixelData.width;
+  imgHeight = pixelData.height;
+
+  panX = (canvas.width - imgWidth * zoom) / 2;
+  panY = (canvas.height - imgHeight * zoom) / 2;
+
+  clearSelection();
+  draw();
+
+  console.log('Loaded frame at', newTime.toFixed(3), 'seconds');
+});
+
+
+
+
+
+
+
+async function downloadEditedVideo() {
+  if (!isVideo) return;
+
+  const fps = estimatedFPS || 30;
+  const duration = video.duration;
+  const totalFrames = Math.floor(duration * fps);
+
+  const offscreenCanvas = document.createElement('canvas');
+  offscreenCanvas.width = imgWidth;
+  offscreenCanvas.height = imgHeight;
+  const offscreenCtx = offscreenCanvas.getContext('2d');
+
+  const stream = offscreenCanvas.captureStream(fps);
+  const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  const chunks = [];
+
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'edited_video.webm';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Hide UI
+  canvas.style.visibility = 'hidden';
+  container.style.backgroundColor = 'black';
+
+  recorder.start();
+
+  for (let f = 0; f < totalFrames; f++) {
+    const time = f / fps;
+
+    await seekTo(time);
+
+    // Get frame key and ImageData
+    const key = Math.floor(time * 1000);
+    let frameData = editedFrames.get(key) || originalFrames.get(key);
+
+    if (!frameData) {
+      // Force capture if missing
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = video.videoWidth;
+      tempCanvas.height = video.videoHeight;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(video, 0, 0);
+      frameData = tempCtx.getImageData(0, 0, imgWidth, imgHeight);
+      originalFrames.set(key, frameData);
+    }
+
+    // Draw frame to offscreen canvas
+    offscreenCtx.putImageData(frameData, 0, 0);
+    await delay(1000 / fps);
+  }
+
+  recorder.stop();
+  canvas.style.visibility = 'visible';
+  container.style.backgroundColor = '';
+}
+
+// Seek helper
+function seekTo(seconds) {
+  return new Promise(res => {
+    video.currentTime = seconds;
+    video.onseeked = () => setTimeout(res, 5); // tiny delay to ensure rendering
+  });
+}
+
+// Delay helper
+function delay(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+
+
+
+
+
+    const downloadAllBtn = document.getElementById('downloadAllBtn');
+downloadAllBtn.addEventListener('click', () => {
+  if (!isVideo) {
+    alert("Load a video first!");
+    return;
+  }
+downloadEditedVideo(50)
+});
+
+    
+    
   // Zoom handling (mouse wheel)
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
