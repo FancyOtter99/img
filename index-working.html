@@ -165,6 +165,7 @@ const editedFrames = new Map();   // key: time (ms), value: ImageData
     tolerance = parseInt(toleranceSlider.value);
   });
 
+  alert("WARNING when editing a video you may have to go to the start and ed multiple times if you wish to edit all frames")
 
   let justFinishedSelecting = false;
 
@@ -181,7 +182,7 @@ const editedFrames = new Map();   // key: time (ms), value: ImageData
           canvas.height = container.clientHeight;
           captureVideoFrame();
           estimateFPS();
-          userfps = prompt("what fps is your video (even number please)")
+          userfps = prompt("what fps is your video?")
         };
       } else {
         isVideo = false;
@@ -828,12 +829,19 @@ pixelateBTN.addEventListener('click', () => {
   }
 
   if (isVideo) {
-    const key = Math.floor(video.currentTime * 1000);
-    editedFrames.set(key, new ImageData(new Uint8ClampedArray(pixelData.data), pixelData.width, pixelData.height));
-  }
+      const key = Math.floor(video.currentTime * 1000);
+      editedFrames.set(key, new ImageData(new Uint8ClampedArray(pixelData.data), pixelData.width, pixelData.height));
+    }
+
 
   draw();
 });
+
+
+
+
+
+
 
 
 
